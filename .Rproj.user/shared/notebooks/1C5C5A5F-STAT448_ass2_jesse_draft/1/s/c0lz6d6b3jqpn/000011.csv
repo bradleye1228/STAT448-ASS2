@@ -1,0 +1,6 @@
+"0","#predicting data on test set"
+"0","res_lm_predictions <- predict(res_lm, test_res)"
+"0",""
+"0","#Calculating MSE"
+"0","res_lm_mse <-  mean((test_res$V104 - res_lm_predictions)^2)"
+"0",""

@@ -1,0 +1,382 @@
+---
+title: "STAT448 Assignment 02, Semester One 2026"
+author: "Eduard Bradley, 13241805 and Jesse Pilcher, 19717404"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    df_print: paged
+  pdf_document:
+    latex_engine: xelatex
+---
+
+```{r load_library, include = TRUE, warning = FALSE, message = FALSE}
+
+# LoadING libraries
+
+library(tidyverse)
+library(ggplot2)
+library(lubridate)
+library(scales)
+library(dplyr)
+library(tinytex)
+library(corrplot)
+library(corrplot)
+library(corrgram)
+library(MASS)
+library(gt)
+library(glmnet)
+```
+
+#Question One
+
+```{r loading resident data,include = TRUE, warning = FALSE, message = FALSE}
+# Reading in dataset
+load("Residen.RData")
+```
+
+
+## a - Correlation Matrix
+```{r q1 corr matrix,include = TRUE, warning = FALSE, message = FALSE}
+
+corr_matrix <- cor(Residen)
+
+corrplot(corr_matrix,
+         type = 'upper',
+         order = 'hclust',
+         addrect = 2,
+         tl.cex = 0.1)
+
+```
+
+
+## b - Generalised Linear Model
+```{r q1A GLM, include = TRUE, warning = FALSE, message = FALSE}
+#Setting random seed 
+set.seed(123)
+
+#Random 80/20 data split
+n <- nrow(Residen)
+train_index <- sample(1:n, size = round(0.8 * n))
+
+# Split the data
+train_res <- Residen[train_index, ]
+test_res  <- Residen[-train_index, ]
+
+#Training linear model
+res_lm <- lm(V104 ~ . - V105, data = train_res)
+
+summary(res_lm)
+
+```
+**Lots of evidence of multicollinearity here (as seen in corrplot)**
+
+```{r q1a lm predictions + test MSE,include = TRUE, warning = FALSE, message = FALSE}
+#predicting data on test set
+res_lm_predictions <- predict(res_lm, test_res)
+
+#Calculating MSE
+res_lm_mse <-  mean((test_res$V104 - res_lm_predictions)^2)
+
+```
+The mean square error (MSE) for the linear model, predicting *actual sales price* (*V104* )using all predictors except for *actual construction costs* (*V105*) is `r res_lm_mse`.
+
+
+## c - Backwards vs Stepwise Selection
+```{r q1A backwards/stewpise selection, include = TRUE, warning = FALSE, message = FALSE}
+#Setting random seed 
+set.seed(123)
+
+# ============================================================================
+#   Training backwards model
+# ============================================================================
+
+#Start of runtime
+backwards_start <- Sys.time()
+
+#Training linear model using backwards selection
+res_lm_backwards <- stepAIC(res_lm,
+                            direction = "backward",
+                            trace = FALSE)
+#End of runtime
+backwards_end <- Sys.time()
+
+# ============================================================================
+#   Backwards Summary Metrics
+# ============================================================================
+#General summary of model
+backwards_summary <- summary(res_lm_backwards)
+
+#Calculating model runtime
+backwards_runtime <- backwards_end - backwards_start
+
+#predicting data on test set
+backward_predictions <- predict(res_lm_backwards, test_res)
+
+#Calculating MSE fo test set predictions
+backwards_mse <-  mean((test_res$V104 - backward_predictions)^2)
+
+backwards_r_adj <- backwards_summary$adj.r.squared
+
+#Count of variables kept in model
+backwards_kept_vars <- nrow(backwards_summary$coefficients)
+# ============================================================================
+#   Training stepwise model
+# ============================================================================
+#Training linear model using stepwise selection
+stepwise_start <-  Sys.time()
+res_lm_stepwise <- stepAIC(res_lm, 
+                           direction = "both",
+                           trace = FALSE)
+
+stepwise_summary <- summary(res_lm_stepwise)
+
+stepwise_end <- Sys.time()
+
+# ============================================================================
+#   Stepwise Summary Metrics
+# ============================================================================
+
+#predicting data on test set
+stepwise_predictions <- predict(res_lm_stepwise, test_res)
+
+#Calculating MSE
+stepwise_mse <- mean((test_res$V104 - stepwise_predictions)^2)
+
+#Calculating model runtime
+stepwise_runtime <- stepwise_end - stepwise_start
+
+#Adjusted R squared
+stepwise_r_adj <- stepwise_summary$adj.r.squared
+                      
+
+#Count of variables kept in model
+stepwise_kept_vars <- nrow(stepwise_summary$coefficients)
+                            
+
+# ============================================================================
+#   Backwards v Stepwise SUmmary Table
+# ============================================================================
+
+#Summary table to view model performance
+summary_table <- data.frame(
+  " " = c("Runtime", "Number of Variables", "Test MSE", "Adjusted R-Squared %"),
+  Backwards = c(as.numeric(backwards_runtime, units = "secs"), 
+                backwards_kept_vars, 
+                backwards_mse,
+                backwards_r_adj),
+  Stepwise = c(as.numeric(stepwise_runtime, units = "secs"), 
+               stepwise_kept_vars, 
+               stepwise_mse,
+               stepwise_r_adj),
+  check.names = FALSE
+)
+
+#Nice little gt table summary to view metrics
+summary_table %>% 
+  gt(rowname_col = " ") %>% 
+  tab_header(title = "Model Performance",
+             subtitle = "Backwards vs Stepwise Selection ") %>% 
+  fmt_number(
+    rows = c("Runtime", "Test MSE"),
+    decimals = 2
+  ) %>%
+  fmt_percent(
+    rows = "Adjusted R-Squared %",
+    decimals = 2
+  ) %>%
+  fmt_number(
+    rows = "Number of Variables",
+    decimals = 0
+  )
+
+```
+
+
+## d - Ridge vs Lasso Regression
+```{r q1A backwards/stewpise selection, include = TRUE, warning = FALSE, message = FALSE, fig.height = 10}
+#Setting random seed 
+set.seed(123)
+
+#x/y matrix for glmnet() function
+y <- train_res$V104
+x <- train_res %>% dplyr::select(-c(V105, V104)) %>% data.matrix()
+
+# ============================================================================
+#   Training ridge regresison model
+# ============================================================================
+
+#Start of runtime
+ridge_start <- Sys.time()
+
+#Cross validation to find best lambda for ridge regression
+ridge_lm_cv <- cv.glmnet(x, y, alpha = 0, nfolds = 10)
+
+ridge_lambda <- ridge_lm_cv$lambda.min
+
+
+#Training ridge regression model with best lambda
+ridge_lm  <- glmnet(x, y, alpha = 0, lambda = ridge_lambda)
+
+#End of runtime
+ridge_end <- Sys.time()
+
+# ============================================================================
+#   Training Lasso Regression Model
+# ============================================================================
+#Start of runtime
+lasso_start <- Sys.time()
+
+#Cross validation to find best lambda for lasso regression
+lasso_lm_cv <- cv.glmnet(x, y, alpha = 1, nfolds = 10)
+
+lasso_lambda <- lasso_lm_cv$lambda.min
+
+#Training ridge regression model with best lambda
+lasso_lm  <- glmnet(x, y, alpha = 1, lambda = lasso_lambda)
+
+#End of runtime
+lasso_end <- Sys.time()
+
+# ============================================================================
+#   Plotting CV for Both Models
+# ============================================================================
+par(mfrow = c(1, 2))
+plot(ridge_lm_cv)
+title("Ridge Regression CV Error Curve", line = 3)
+plot(lasso_lm_cv)
+title("Lasso Regression CV Error Curve", line = 3)
+
+
+```
+
+```{r q1b ridge v lasso table}
+#Test matrix
+x_test <- test_res %>% dplyr::select(-c(V105, V104)) %>% data.matrix()
+
+# ============================================================================
+#   Ridge Summary Metrics
+# ============================================================================
+
+#Calculating model runtime
+ridge_runtime <- ridge_end - ridge_start
+
+#predicting data on test set
+ridge_predictions <- predict(ridge_lm, x_test)
+
+#Calculating MSE fo test set predictions
+ridge_mse <-  mean((test_res$V104 - ridge_predictions)^2)
+
+ridge_r_adj <- ridge_lm$dev.ratio
+
+#Count of non-zero coefficients in model
+ridge_kept_vars <- sum(coef(ridge_lm) != 0) - 1
+
+# ============================================================================
+#   Lasso Summary Metrics
+# ============================================================================
+
+
+#Calculating model runtime
+lasso_runtime <- lasso_end - lasso_start
+
+#predicting data on test set
+lasso_predictions <- predict(lasso_lm, x_test)
+
+#Calculating MSE fo test set predictions
+lasso_mse <-  mean((test_res$V104 - lasso_predictions)^2)
+
+lasso_r_adj <- lasso_lm$dev.ratio
+
+#Count of variables kept in model
+lasso_kept_vars <-  sum(coef(lasso_lm) != 0) - 1
+# ============================================================================
+#   Ridge v Lasso SUmmary Table
+# ============================================================================
+
+#Summary table to view model performance
+summary_table <- data.frame(
+  " " = c("Runtime", "Number of Variables", "Test MSE", "R-Squared %"),
+  Ridge = c(as.numeric(ridge_runtime, units = "secs"), 
+                ridge_kept_vars, 
+                ridge_mse,
+                ridge_r_adj),
+  Lasso = c(as.numeric(lasso_runtime, units = "secs"), 
+               lasso_kept_vars, 
+               lasso_mse,
+               lasso_r_adj),
+  check.names = FALSE
+)
+
+#Nice little gt table summary to view metrics
+summary_table %>% 
+  gt(rowname_col = " ") %>% 
+  tab_header(title = "Model Performance",
+             subtitle = "Ridge vs Lasso Regression ") %>% 
+  fmt_number(
+    rows = c("Runtime", "Test MSE"),
+    decimals = 2
+  ) %>%
+  fmt_percent(
+    rows = "R-Squared %",
+    decimals = 2
+  ) %>%
+  fmt_number(
+    rows = "Number of Variables",
+    decimals = 0
+  )
+```
+
+## e - Why is one better than the other
+
+#Question Two
+
+```{r loading parkinsons data,include = TRUE, warning = FALSE, message = FALSE}
+# Reading in dataset
+park_data <-  read.csv("parkinsons.csv")
+
+#Splitting into train/test data
+set.seed(123)
+
+#Random 30/12 data split
+park_train_index <- sample(seq_len(nrow(park_data)), size = 30)
+
+# Split the data
+train_park <- park_data[park_train_index, ]
+test_park  <- park_data[-park_train_index, ] #Remaining 12 observations used in test data
+
+#Setting up X matrix
+park_X_train <- train_park %>%  dplyr::select(-UPDRS) %>% data.matrix()
+park_X_test <- test_park %>%  dplyr::select(-UPDRS) %>% data.matrix()
+
+#Scaling X matrices
+park_X_train <- scale(park_X_train)
+park_X_test <- scale(park_X_test)
+
+#Setting up y matrices
+park_Y_train <- train_park$UPDRS
+park_Y_test <-  test_park$UPDRS
+```
+
+## a - Linear Model
+```{r q2a parkinsons linear model,include = TRUE, warning = FALSE, message = FALSE}
+
+park_lm <- lm(UPDRS ~ ., data = train_park)
+
+park_lm
+
+```
+Not useful because lots of NA values?
+
+
+## b)
+
+## c)
+
+#Question Three
+
+##Random Split Training Data
+
+## Elastic Net Model
+
+## Cross-Validation
+
