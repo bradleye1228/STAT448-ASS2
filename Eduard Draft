@@ -1,0 +1,1450 @@
+---
+title: "STAT448_Assignment_02_Draft_01"
+author: "Eduard Bradley, 13241805 and Jesse Pilcher, 19717404"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+
+# STAT 448-26S1 Assignment 02
+
+
+```{r load_library, include = TRUE, warning = FALSE, message = FALSE}
+
+# Load the libraries
+
+library(tidyverse)      
+library(lubridate)     
+library(scales)        
+library(ggtext)        
+library(corrplot)      
+library(corrgram)      
+library(plotly)        
+library(MASS)          
+library(knitr)         
+library(kableExtra)    
+library(glmnet)        
+library(tinytex)       
+
+```
+
+
+```{r formatting_helper_function, include = TRUE, warning = FALSE, message = FALSE}
+
+# Clean formatted MSE values for inline use
+fmt <- function(x, digits = 2) {
+  if (is.na(x)) return("NA")
+  formatC(x, format = "f", big.mark = ",", digits = digits)
+}
+
+```
+
+
+## Question One
+
+**(40 marks) In the folder for Assignment 2, question 1 there are 2 files: the RData file Resident and the excel file Residential-Building-Data-Set.xlsx. Residen is a copy of the dataset in the excel file where the variables names have been changed for use in R. The excel file also contains a description of the variables. More information on the dataset can be obtained on the UCI webpage:**
+
+<https://archive.ics.uci.edu/ml/datasets/Residential+Building+Data+Set>
+
+
+```{r qu1_set_seed, include = TRUE, warning = FALSE, message = FALSE}
+
+# Set seed
+set.seed(123)
+
+```
+
+
+```{r qu1_load_dataset, include = TRUE, warning = FALSE, message = FALSE}
+
+# Load the dataset:
+load("Residen.RData")
+q1_data <- Residen
+
+```
+
+
+### Question One (A)
+
+**(a) (8 marks) Explore the correlation between the variables using appropriate graphical tools (e.g. corrplot). Comment on any strong correlations or groups of correlated predictors.**
+
+
+```{r qu_1a_01, include = TRUE, warning = FALSE, message = FALSE}
+
+# Pearson correlation matrix
+pearson_corr <- cor(q1_data, method = "pearson", use = "complete.obs")
+
+# AOE ordering
+aoe_order <- corrMatOrder(pearson_corr, order = "AOE")
+corr_aoe <- pearson_corr[aoe_order, aoe_order]
+
+# Keep only upper triangle
+corr_upper <- corr_aoe
+corr_upper[lower.tri(corr_upper, diag = TRUE)] <- NA
+
+# Convert to long format
+corr_long <- as.data.frame(corr_upper) %>%
+  rownames_to_column("Var1") %>%
+  pivot_longer(-Var1, names_to = "Var2", values_to = "Correlation") %>%
+  filter(!is.na(Correlation))
+
+# Variable names (ordered)
+var_names <- rownames(corr_aoe)
+
+```
+
+
+```{r v1_qu_1a_02, include = TRUE, warning = FALSE, message = FALSE, fig.keep = "all", fig.width = 10, fig.height = 10, cache = FALSE, eval = TRUE}
+
+# Plot the plotly correlation heatmap
+plot_ly(
+  data = corr_long,
+  x = ~factor(Var2, levels = var_names),
+  y = ~factor(Var1, levels = rev(var_names)),
+  z = ~Correlation,
+  type = "heatmap",
+  colorscale = list(c(0, "blue"), c(0.5, "white"), c(1, "red")),
+  zmin = -1,
+  zmax = 1,
+  hovertemplate = "<b>%{x} vs %{y}</b><br>r = %{z:.2f}<extra></extra>"
+) %>%
+  layout(
+    title = list(
+      text = "Pearson Correlation Heatmap (AOE Ordering)",
+      x = 0.5
+    ),
+    xaxis = list(title = "", tickangle = 90, tickfont = list(size = 7)),
+    yaxis = list(title = "", tickfont = list(size = 7)),
+    width = 1000,
+    height = 1000
+  )
+
+```
+
+
+#### Interpretation
+
+```{r qu_1a_03, include = TRUE, warning = FALSE, message = FALSE}
+
+# Convert to long format
+pearson_list <- as.data.frame(as.table(pearson_corr))
+
+# Remove duplicates and self-correlations
+pearson_list <- pearson_list[pearson_list$Var1 != pearson_list$Var2, ]
+pearson_list <- pearson_list[!duplicated(
+  t(apply(pearson_list[,1:2], 1, sort))
+), ]
+
+# Absolute correlations
+pearson_list$abs_corr <- abs(pearson_list$Freq)
+
+# Stratify (order from weak to perfect)
+pearson_list$strata <- cut(
+  pearson_list$abs_corr,
+  breaks = c(0, 0.3, 0.5, 0.7, 0.9, 1),
+  labels = c("Weak (0–0.3)",
+             "Moderate (0.3–0.5)",
+             "Strong (0.5–0.7)",
+             "Very Strong (0.7–0.9)",
+             "Near-Perfect (0.9–1)"),
+  include.lowest = TRUE,
+  ordered_result = TRUE
+)
+
+# Convert to factor explicitly with desired order
+pearson_list$strata <- factor(
+  pearson_list$strata,
+  levels = c("Weak (0–0.3)",
+             "Moderate (0.3–0.5)",
+             "Strong (0.5–0.7)",
+             "Very Strong (0.7–0.9)",
+             "Near-Perfect (0.9–1)")
+)
+
+# Summary table
+corr_summary <- as.data.frame(table(pearson_list$strata))
+
+# Add percentages
+corr_summary$Percentage <- round(
+  corr_summary$Freq / sum(corr_summary$Freq) * 100, 2
+)
+
+```
+
+
+```{r qu_1a_04, include = TRUE, warning = FALSE, message = FALSE}
+
+# Extract specific percentages for interpretation
+strong_corr_percent <- corr_summary %>%
+  filter(Var1 %in% c("Strong (0.5–0.7)", "Very Strong (0.7–0.9)", "Near-Perfect (0.9–1)")) %>%
+  summarise(total = sum(Percentage)) %>%
+  pull(total)
+
+very_strong_percent <- corr_summary %>%
+  filter(Var1 == "Very Strong (0.7–0.9)") %>%
+  pull(Percentage)
+
+near_perfect_percent <- corr_summary %>%
+  filter(Var1 == "Near-Perfect (0.9–1)") %>%
+  pull(Percentage)
+
+weak_percent <- corr_summary %>%
+  filter(Var1 == "Weak (0–0.3)") %>%
+  pull(Percentage)
+
+# Find strongest correlation pair
+strongest_pair <- pearson_list %>%
+  filter(abs_corr == max(abs_corr)) %>%
+  slice(1)
+
+strongest_var1 <- as.character(strongest_pair$Var1)
+strongest_var2 <- as.character(strongest_pair$Var2)
+strongest_corr <- round(strongest_pair$Freq, 3)
+
+# Count of near-perfect pairs
+near_perfect_count <- corr_summary %>%
+  filter(Var1 == "Near-Perfect (0.9–1)") %>%
+  pull(Freq)
+
+```
+
+
+```{r qu_1a_05, include = TRUE, warning = FALSE, message = FALSE}
+
+# Display correlation summary table
+corr_summary %>%
+  dplyr::arrange(match(Var1, levels(pearson_list$strata))) %>%
+  kable(
+    caption = "Distribution of Pearson Correlation Strengths",
+    col.names = c("Correlation Strength", "Count", "Percentage (%)"),
+    align = c("l", "c", "c"),
+    digits = 2,
+    booktabs = TRUE
+  ) %>%
+  kable_styling(
+    full_width = FALSE,
+    bootstrap_options = c("striped", "hover", "condensed", "responsive"),
+    font_size = 12,
+    position = "center"
+  ) %>%
+  row_spec(0, bold = TRUE) %>%
+  column_spec(1, bold = TRUE)
+
+```
+
+
+The correlation heatmap uses Angles of Eigenvectors (AOE) ordering, which arranges variables so that those with similar correlation patterns are grouped together. This makes it easier to see clusters of highly correlated predictors. The Plotly heatmap also provides interactive functionality, allowing users to hover over any cell to view the exact variable names and correlation coefficient (r-value) for that specific pair.
+
+Looking at the distribution of absolute correlation coefficients across all `r nrow(pearson_list)` unique variable pairs:
+
+- Weak correlations (|r| < 0.3): `r weak_percent`% of pairs
+- Strong to near-perfect correlations (|r| > 0.5): `r strong_corr_percent`% of pairs
+- Very strong correlations (|r| = 0.7–0.9): `r very_strong_percent`% of pairs
+- Near-perfect correlations (|r| > 0.9): `r near_perfect_percent`% of pairs (`r near_perfect_count` variable pairs)
+
+The strongest correlation observed is `r strongest_corr` between `r strongest_var1` and `r strongest_var2`.
+
+The AOE ordering clearly separates the variables into two main groups. The first group contains the project physical and financial variables (V-1 to V-8), which are fixed for each project. These show mostly weak to moderate correlations with each other.
+
+The second group contains the economic variables and indices (V-11 to V-29) repeated across five time lags (Lag 1 to Lag 5). Within this group, the AOE ordering clusters together all lags of the same economic variable, and also places economically related variables (like exchange rates and liquidity) close to each other. This group shows very strong to near-perfect correlations, both within the same variable across different lags, and between different economic variables that are linked through macroeconomic conditions.
+
+The AOE ordering also helps identify how the variables are structured. The economic variables repeat every 19 columns (V-11 to V-29) across lags 1 to 5, which explains why the heatmap shows clear block-like clusters. The near-perfect correlations occur because the same underlying economic indicator is measured at slightly shifted time points.
+
+Because of this structure, there is substantial multicollinearity in the dataset. This means that standard linear regression would have unstable coefficients and inflated standard errors. Regularisation methods like Ridge, LASSO, or ElasticNet are more suitable here, as they can handle these strong correlations by shrinking coefficients or selecting relevant groups of predictors.
+
+
+### Question One (B)
+
+**(b) (8 marks) Please fit a linear regression model to explain the "actual sales price" (V104) in terms of the other variables excluding the variable "actual construction costs" (V105). Show and interpret the summary() output. Randomly split the data using a 80:20 split (train/test). Report the baseline test-set MSE.**
+
+
+```{r qu_1b_01, include = TRUE, warning = FALSE, message = FALSE}
+
+# Create train/test split (80/20)
+n <- nrow(q1_data)
+q1_train_idx <- sample(1:n, size = 0.8 * n, replace = FALSE)
+
+# Define raw train/test split
+q1_X_train <- q1_data[q1_train_idx, !names(q1_data) %in% c("V104", "V105")]
+q1_X_test  <- q1_data[-q1_train_idx, !names(q1_data) %in% c("V104", "V105")]
+q1_y_train <- q1_data$V104[q1_train_idx]
+q1_y_test  <- q1_data$V104[-q1_train_idx]
+
+# Create full dataframes for train/test (easier to reference later)
+q1_train <- q1_data[q1_train_idx, ]
+q1_test  <- q1_data[-q1_train_idx, ]
+
+```
+
+
+```{r qu_1b_02, include = TRUE, warning = FALSE, message = FALSE}
+
+# Make train/test split summary table
+q1_split_summary <- data.frame(
+  Dataset = c("Training (80%)", "Test (20%)", "Total"),
+  Observations = c(nrow(q1_X_train), nrow(q1_X_test), n)
+)
+
+kable(q1_split_summary, caption = "Train/Test Split Summary") %>%
+  kable_styling(full_width = FALSE)
+
+```
+
+
+```{r qu_1b_03, include = TRUE, warning = FALSE, message = FALSE}
+
+# Fit linear regression model (V104 as response, exclude V105)
+q1b_model <- lm(q1_y_train ~ ., data = as.data.frame(q1_X_train))
+
+```
+
+
+```{r qu_1b_04, include = TRUE, warning = FALSE, message = FALSE}
+
+# Model summary
+summary(q1b_model)
+
+```
+
+
+```{r qu_1b_05, include = TRUE, warning = FALSE, message = FALSE}
+
+# Predict on test set and calculate MSE
+q1b_pred <- predict(q1b_model, newdata = as.data.frame(q1_X_test))
+q1b_mse <- mean((q1_y_test - q1b_pred)^2)
+
+```
+
+The baseline MSE value for the model is `r fmt(q1b_mse)`.
+
+From the regression summary, several predictors have NA coefficient estimates. This occurs because strong multicollinearity among predictors leads to a singular model matrix. As identified in Question 1(A), many variable pairs exhibit very high correlations (|r| > 0.9), indicating substantial redundancy. During estimation, R automatically removes linearly dependent predictors, which results in undefined coefficient estimates appearing in the summary output.
+
+Apart from that, several predictors were statistically significant at the 0.05 significance level, including V8 (p < 2e-16), COMPLETION YEAR (p = 1.38e-15), COMPLETION QUARTER (p = 1.32e-09), V5 (p = 0.000241), V1 (p = 0.004670), V4 (p = 0.030978), and V6 (p = 0.062074, borderline at the 0.10 level).
+
+
+```{r qu_1b_06, include = TRUE, warning = FALSE, message = FALSE, fig.width = 10, fig.height = 10, fig.align = "center"}
+
+# Partition the plot window, two rows and two columns.
+par(mfrow = c(2, 2))
+
+# Produce the diagnostic plots for model.
+plot(q1b_model)
+
+```
+
+
+```{r qu_1b_07, include = TRUE, warning = FALSE, message = FALSE, fig.width = 7, fig.height = 7, fig.align = "center"}
+
+# Create histogram of residuals
+hist(
+  residuals(q1b_model),
+  breaks = 30,
+  col = "lightblue",
+  border = "white",
+  main = "Histogram of Residuals for Question 1B Model",
+  xlab = "Residual Values"
+)
+
+```
+
+The diagnostic plots reveal several issues with the initial linear regression model. The Residuals vs Fitted plot shows a non-random pattern, suggesting potential non-linearity or omitted variables. The Normal Q-Q plot indicates deviations from normality, particularly in the tails, as the residuals do not follow the theoretical diagonal line closely. The Scale-Location plot shows some evidence of heteroscedasticity, with residuals spreading unevenly across fitted values. The histogram of residuals appears roughly centred around zero but shows some skewness and heavy tails. These diagnostic issues are expected given the severe multicollinearity identified in the correlation analysis. The presence of NA coefficients from linearly dependent predictors further confirms that the standard linear regression assumptions are violated, motivating the use of regularisation methods such as Ridge, LASSO, or ElasticNet in subsequent questions.
+
+
+### Question One (C)
+
+**(c) (8 marks) Using the same train/test split used in (b), fit a linear regression model to explain the "actual sales price" (V104) in terms of other variables (excluding the variable "actual construction costs" (V105)) using (i) backwards selection and (ii) stepwise selection. Compare the two models on: outputs, computational time (system.time), number of predictors kept, and test-set MSE.**
+
+
+```{r v1_qu_1c_01, include = TRUE, warning = FALSE, message = FALSE}
+
+# Define null model (intercept only)
+q1c_null <- lm(V104 ~ 1, data = q1_train)
+
+# Define full model (all predictors except V105)
+q1c_full <- lm(V104 ~ . - V105, data = q1_train)
+
+```
+
+
+```{r v1_qu_1c_02, include = TRUE, warning = FALSE, message = FALSE}
+
+# Train/test split summary table
+q1c_split_summary <- data.frame(
+  Dataset = c("Training (80%)", "Test (20%)", "Total"),
+  Observations = c(nrow(q1_train), nrow(q1_test), n)
+)
+
+kable(q1c_split_summary, caption = "Train/Test Split Summary") %>%
+  kable_styling(full_width = FALSE)
+
+```
+
+
+#### Question One (C.i.) - Backward Selection
+
+```{r v1_qu_1c_03, include = TRUE, warning = FALSE, message = FALSE}
+
+# Backward selection using AIC
+q1c_time_backward <- system.time({
+  q1c_backward <- stepAIC(
+    q1c_full,
+    direction = "backward",
+    trace = FALSE
+  )
+})
+
+```
+
+Backward selection completed in `r round(q1c_time_backward[3], 2)` seconds.
+
+
+```{r v1_qu_1c_04, include = TRUE, warning = FALSE, message = FALSE}
+
+# Summary of backward model
+summary(q1c_backward)
+
+# Number of predictors for backward (excluding intercept)
+q1c_backward_n <- length(coef(q1c_backward)) - 1
+
+```
+
+
+#### Question One (C.ii.) - Stepwise (Bidirectional) Selection
+
+```{r v1_qu_1c_05, include = TRUE, warning = FALSE, message = FALSE}
+
+# Stepwise selection using AIC (both directions)
+q1c_time_stepwise <- system.time({
+  q1c_stepwise <- stepAIC(
+    q1c_null,
+    scope = list(lower = q1c_null, upper = q1c_full),
+    direction = "both",
+    trace = FALSE
+  )
+})
+
+```
+
+Stepwise selection completed in `r round(q1c_time_stepwise[3], 2)` seconds.
+
+
+```{r v1_qu_1c_06, include = TRUE, warning = FALSE, message = FALSE}
+
+# Summary of stepwise model
+summary(q1c_stepwise)
+
+# Number of predictors (excluding intercept)
+q1c_stepwise_n <- length(coef(q1c_stepwise)) - 1
+
+```
+
+
+#### Question One (C.iii.) - Comparison
+
+```{r qu_1c_07, include = TRUE, warning = FALSE, message = FALSE}
+
+# Predictions on test set
+q1c_pred_backward <- predict(q1c_backward, newdata = q1_test)
+q1c_pred_stepwise <- predict(q1c_stepwise, newdata = q1_test)
+
+# Test MSE calculations
+q1c_mse_backward <- mean((q1_test$V104 - q1c_pred_backward)^2)
+q1c_mse_stepwise <- mean((q1_test$V104 - q1c_pred_stepwise)^2)
+
+```
+
+
+```{r qu_1c_08, include = TRUE, warning = FALSE, message = FALSE}
+
+# Create comparison table
+q1c_comparison <- data.frame(
+  Model = c("Backward Selection", "Stepwise (Bidirectional) Selection"),
+  Predictors_Retained = c(q1c_backward_n, q1c_stepwise_n),
+  Test_MSE = c(round(q1c_mse_backward, 2), round(q1c_mse_stepwise, 2)),
+  Time_Seconds = c(round(q1c_time_backward[3], 2), round(q1c_time_stepwise[3], 2))
+)
+
+kable(q1c_comparison, caption = "Comparison of Variable Selection Methods") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover")) %>%
+  row_spec(0, bold = TRUE)
+
+```
+
+
+The backward selection model retained `r q1c_backward_n` predictors and achieved a test MSE of `r fmt(q1c_mse_backward)`, completing in `r round(q1c_time_backward[3], 2)` seconds. The stepwise (bidirectional) selection model retained only `r q1c_stepwise_n` predictors with a test MSE of `r fmt(q1c_mse_stepwise)`, completing in `r round(q1c_time_stepwise[3], 2)` seconds.
+
+The stepwise model achieved a substantially lower MSE (approximately `r round(100 * (q1c_mse_backward - q1c_mse_stepwise) / q1c_mse_backward, 1)`% lower) with less than half the number of predictors (`r q1c_stepwise_n` vs `r q1c_backward_n`), and was considerably faster to compute (`r round(q1c_time_stepwise[3], 2)` seconds vs `r round(q1c_time_backward[3], 2)` seconds).
+
+Both backward and stepwise selection use greedy search algorithms that make locally optimal decisions at each step without evaluating all possible predictor subsets. However, stepwise selection offers greater flexibility because it allows both addition and removal of predictors at each stage. This bidirectional approach enables the algorithm to correct earlier decisions and potentially escape local optima that may trap the more restrictive backward selection method. This increased flexibility likely contributed to its superior performance, producing a more parsimonious model with better predictive accuracy.
+
+Importantly, both selection methods produced models with dramatically lower test MSE compared to the full linear regression model from Question 1(B), which had an MSE of `r fmt(q1b_mse)`. The stepwise model reduced the MSE by approximately `r round(100 * (q1b_mse - q1c_mse_stepwise) / q1b_mse, 1)`%, demonstrating the value of variable selection in the presence of severe multicollinearity.
+
+
+### Question One (D)
+
+**(d) (8 marks) Using the same train/test split used in (c) fit a linear regression model to explain the "actual sales price" (V104) in terms of other variables (excluding the variable "actual construction costs" (V105)) using (i) Ridge regression (ii) LASSO regression with an appropriate λ determined by 10-fold cross validation. Compare these two models in terms of outputs, computational time, test-set MSE, and number of predictors kept. Show the CV error curve for both.**
+
+
+```{r qu_1d_01, include = TRUE, warning = FALSE, message = FALSE}
+
+# Create model matrix (excluding V105 and the response V104)
+# Remove intercept column because glmnet uses its own intercept by default
+
+q1d_x_train <- model.matrix(V104 ~ . - V105, data = q1_train)[, -1]
+q1d_y_train <- q1_train$V104
+
+q1d_x_test <- model.matrix(V104 ~ . - V105, data = q1_test)[, -1]
+q1d_y_test <- q1_test$V104
+
+```
+
+
+```{r qu_1d_02, include = TRUE, warning = FALSE, message = FALSE}
+
+# Train/test split summary table
+q1d_split_summary <- data.frame(
+  Dataset = c("Training (80%)", "Test (20%)", "Total"),
+  Observations = c(nrow(q1d_x_train), nrow(q1d_x_test), nrow(q1_data))
+)
+
+kable(q1d_split_summary, caption = "Train/Test Split Summary (from Question 1C)") %>%
+  kable_styling(full_width = FALSE)
+
+```
+
+
+#### Question One (D.i.) - Ridge Regression
+
+```{r qu_1d_03, include = TRUE, warning = FALSE, message = FALSE}
+
+# Perform 10-fold cross-validation to find optimal lambda for Ridge (alpha = 0)
+q1d_time_ridge <- system.time({
+  q1d_cv_ridge <- cv.glmnet(
+    x = q1d_x_train,
+    y = q1d_y_train,
+    alpha = 0,
+    nfolds = 10
+  )
+})
+
+```
+
+Ridge regression cross-validation completed in `r round(q1d_time_ridge[3], 2)` seconds.
+
+
+```{r qu_1d_04, include = TRUE, warning = FALSE, message = FALSE}
+
+# Optimal lambda values
+q1d_lambda_ridge_min <- q1d_cv_ridge$lambda.min
+q1d_lambda_ridge_1se <- q1d_cv_ridge$lambda.1se
+
+# Fit final ridge model with lambda.min
+q1d_model_ridge <- glmnet(
+  x = q1d_x_train,
+  y = q1d_y_train,
+  alpha = 0,
+  lambda = q1d_lambda_ridge_min
+)
+
+# Number of predictors kept (Ridge keeps all, but coefficients may be near zero)
+q1d_ridge_coef <- as.matrix(coef(q1d_model_ridge))
+q1d_ridge_n <- ncol(q1d_x_train)  # Ridge retains all predictors by design
+
+# Predict on test set
+q1d_pred_ridge <- predict(q1d_model_ridge, newx = q1d_x_test, s = q1d_lambda_ridge_min)
+q1d_mse_ridge <- mean((q1d_y_test - q1d_pred_ridge)^2)
+
+```
+
+
+```{r qu_1d_05, include = TRUE, warning = FALSE, message = FALSE, fig.width = 8, fig.height = 6, fig.align = "center"}
+
+# Ridge CV error curve
+q1d_ridge_df <- data.frame(
+  lambda = q1d_cv_ridge$lambda,
+  log_lambda = log(q1d_cv_ridge$lambda),
+  cvm = q1d_cv_ridge$cvm,
+  cvup = q1d_cv_ridge$cvup,
+  cvlo = q1d_cv_ridge$cvlo
+)
+
+ggplot(q1d_ridge_df, aes(x = log_lambda, y = cvm)) +
+  geom_line(color = "#ADD8E6", linewidth = 1) +
+  geom_ribbon(aes(ymin = cvlo, ymax = cvup), alpha = 0.2, fill = "#ADD8E6") +
+  geom_vline(xintercept = log(q1d_lambda_ridge_min), linetype = "dashed", color = "red", linewidth = 1) +
+  geom_vline(xintercept = log(q1d_lambda_ridge_1se), linetype = "dotted", color = "darkred", linewidth = 1) +
+  annotate("text", x = log(q1d_lambda_ridge_min), y = max(q1d_ridge_df$cvm), 
+           label = "lambda.min", angle = 90, vjust = -0.5, hjust = 1, color = "red") +
+  labs(
+    title = "Ridge Regression: Cross-Validation Error Curve",
+    x = expression(log(lambda)),
+    y = "Cross-Validated MSE"
+  ) +
+  theme_minimal()
+
+```
+
+
+```{r qu_1d_06, include = TRUE, warning = FALSE, message = FALSE, fig.width = 8, fig.height = 6, fig.align = "center"}
+
+# Ridge coefficient path plot
+ridge_fit <- glmnet(x = q1d_x_train, y = q1d_y_train, alpha = 0)
+plot(ridge_fit, xvar = "lambda", label = TRUE,
+     main = "Ridge Regression: Coefficient Path")
+abline(v = log(q1d_lambda_ridge_min), lty = 2, col = "red")
+
+```
+
+
+#### Question One (D.ii.) - LASSO Regression
+
+```{r qu_1d_07, include = TRUE, warning = FALSE, message = FALSE}
+
+# Perform 10-fold cross-validation to find optimal lambda for LASSO (alpha = 1)
+q1d_time_lasso <- system.time({
+  q1d_cv_lasso <- cv.glmnet(
+    x = q1d_x_train,
+    y = q1d_y_train,
+    alpha = 1,
+    nfolds = 10
+  )
+})
+
+```
+
+LASSO regression cross-validation completed in `r round(q1d_time_lasso[3], 2)` seconds.
+
+
+```{r qu_1d_08, include = TRUE, warning = FALSE, message = FALSE}
+
+# Optimal lambda values
+q1d_lambda_lasso_min <- q1d_cv_lasso$lambda.min
+q1d_lambda_lasso_1se <- q1d_cv_lasso$lambda.1se
+
+# Fit final LASSO model with lambda.min
+q1d_model_lasso <- glmnet(
+  x = q1d_x_train,
+  y = q1d_y_train,
+  alpha = 1,
+  lambda = q1d_lambda_lasso_min
+)
+
+# Number of predictors kept (LASSO performs variable selection)
+q1d_lasso_coef <- as.matrix(coef(q1d_model_lasso))
+q1d_lasso_n <- sum(q1d_lasso_coef[-1, 1] != 0)
+
+# Predict on test set
+q1d_pred_lasso <- predict(q1d_model_lasso, newx = q1d_x_test, s = q1d_lambda_lasso_min)
+q1d_mse_lasso <- mean((q1d_y_test - q1d_pred_lasso)^2)
+
+```
+
+
+```{r qu_1d_09, include = TRUE, warning = FALSE, message = FALSE, fig.width = 8, fig.height = 6, fig.align = "center"}
+
+# LASSO CV error curve
+q1d_lasso_df <- data.frame(
+  lambda = q1d_cv_lasso$lambda,
+  log_lambda = log(q1d_cv_lasso$lambda),
+  cvm = q1d_cv_lasso$cvm,
+  cvup = q1d_cv_lasso$cvup,
+  cvlo = q1d_cv_lasso$cvlo
+)
+
+ggplot(q1d_lasso_df, aes(x = log_lambda, y = cvm)) +
+  geom_line(color = "darkgreen", linewidth = 1) +
+  geom_ribbon(aes(ymin = cvlo, ymax = cvup), alpha = 0.2, fill = "darkgreen") +
+  geom_vline(xintercept = log(q1d_lambda_lasso_min), linetype = "dashed", color = "red", linewidth = 1) +
+  geom_vline(xintercept = log(q1d_lambda_lasso_1se), linetype = "dotted", color = "darkred", linewidth = 1) +
+  annotate("text", x = log(q1d_lambda_lasso_min), y = max(q1d_lasso_df$cvm), 
+           label = "lambda.min", angle = 90, vjust = -0.5, hjust = 1, color = "red") +
+  labs(
+    title = "LASSO Regression: Cross-Validation Error Curve",
+    x = expression(log(lambda)),
+    y = "Cross-Validated MSE"
+  ) +
+  theme_minimal()
+
+```
+
+
+```{r qu_1d_10, include = TRUE, warning = FALSE, message = FALSE, fig.width = 8, fig.height = 6, fig.align = "center"}
+
+# LASSO coefficient path plot
+lasso_fit <- glmnet(x = q1d_x_train, y = q1d_y_train, alpha = 1)
+plot(lasso_fit, xvar = "lambda", label = TRUE,
+     main = "LASSO Regression: Coefficient Path")
+abline(v = log(q1d_lambda_lasso_min), lty = 2, col = "red")
+
+```
+
+
+#### Question One (D.iii.) - Model Comparison
+
+```{r qu_1d_11, include = TRUE, warning = FALSE, message = FALSE}
+
+# Create comparison table
+q1d_comparison <- data.frame(
+  Model = c("Stepwise (from Q1c)", "Ridge Regression", "LASSO Regression"),
+  Predictors_Retained = c(q1c_stepwise_n, q1d_ridge_n, q1d_lasso_n),
+  Test_MSE = c(round(q1c_mse_stepwise, 2), round(q1d_mse_ridge, 2), round(q1d_mse_lasso, 2)),
+  Time_Seconds = c(round(q1c_time_stepwise[3], 2), round(q1d_time_ridge[3], 2), round(q1d_time_lasso[3], 2))
+)
+
+kable(q1d_comparison, caption = "Comparison of Ridge, LASSO, and Stepwise Selection") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover")) %>%
+  row_spec(0, bold = TRUE)
+
+```
+
+
+Ridge regression retains all `r q1d_ridge_n` predictors by design, as the L2 penalty shrinks coefficients towards zero but never exactly to zero. This count reflects the full predictor set rather than a meaningful selection. Ridge achieved a test MSE of `r fmt(q1d_mse_ridge)`, completing in `r round(q1d_time_ridge[3], 2)` seconds.
+
+In contrast, LASSO's L1 penalty produces exact zeros, genuinely reducing the active predictor set to `r q1d_lasso_n` predictors. LASSO achieved a test MSE of `r fmt(q1d_mse_lasso)`, completing in `r round(q1d_time_lasso[3], 2)` seconds.
+
+LASSO outperformed Ridge on test MSE (`r fmt(q1d_mse_lasso)` vs `r fmt(q1d_mse_ridge)`), which is approximately `r round(100 * (q1d_mse_ridge - q1d_mse_lasso) / q1d_mse_ridge, 1)`% lower. LASSO also produced a much sparser model, retaining only `r q1d_lasso_n` predictors compared to Ridge which retained all `r q1d_ridge_n` predictors (though Ridge coefficients are heavily shrunk). This sparsity makes LASSO more interpretable.
+
+Compared to the stepwise selection model from Question 1(C), which had a test MSE of `r fmt(q1c_mse_stepwise)` with `r q1c_stepwise_n` predictors, LASSO achieved a lower MSE (`r fmt(q1d_mse_lasso)` vs `r fmt(q1c_mse_stepwise)`) with a similar number of predictors (`r q1d_lasso_n` vs `r q1c_stepwise_n`). However, LASSO is more theoretically grounded as it directly optimises a penalised likelihood function rather than using a greedy search algorithm.
+
+The cross-validation error curves for both Ridge and LASSO show the typical U-shaped pattern, with the optimal `lambda.min` marked by the red dashed line. Both models successfully regularise the severe multicollinearity identified in Question 1(A), producing stable coefficient estimates and improved test set performance compared to the full linear model from Question 1(B) (MSE = `r fmt(q1b_mse)`).
+
+
+### Question One (E)
+
+**(e) (8 marks) Please give a possible explanation of why one method is better than the other in this case, considering also results from backwards and stepwise selection. Refer to the correlation plot, multicollinearity, and bias-variance trade-off.**
+
+
+```{r qu_1e_01, include = TRUE, warning = FALSE, message = FALSE}
+
+# Create comprehensive summary table for all models
+q1e_comparison <- data.frame(
+  Model = c(
+    "Full Linear Model (Q1B)",
+    "Backward Selection (Q1C)",
+    "Stepwise Selection (Q1C)",
+    "Ridge Regression (Q1D)",
+    "LASSO Regression (Q1D)"
+  ),
+  Predictors_Retained = c(
+    ncol(q1_X_train),
+    q1c_backward_n,
+    q1c_stepwise_n,
+    q1d_ridge_n,
+    q1d_lasso_n
+  ),
+  Test_MSE = c(
+    round(q1b_mse, 2),
+    round(q1c_mse_backward, 2),
+    round(q1c_mse_stepwise, 2),
+    round(q1d_mse_ridge, 2),
+    round(q1d_mse_lasso, 2)
+  ),
+  Time_Seconds = c(
+    NA,
+    round(q1c_time_backward[3], 2),
+    round(q1c_time_stepwise[3], 2),
+    round(q1d_time_ridge[3], 2),
+    round(q1d_time_lasso[3], 2)
+  )
+)
+
+# Add MSE improvement relative to baseline
+baseline_mse <- q1b_mse
+q1e_comparison$MSE_Improvement <- c(
+  "Baseline",
+  paste0(round(100 * (baseline_mse - q1c_mse_backward) / baseline_mse, 1), "%"),
+  paste0(round(100 * (baseline_mse - q1c_mse_stepwise) / baseline_mse, 1), "%"),
+  paste0(round(100 * (baseline_mse - q1d_mse_ridge) / baseline_mse, 1), "%"),
+  paste0(round(100 * (baseline_mse - q1d_mse_lasso) / baseline_mse, 1), "%")
+)
+
+# Find best row (lowest MSE, excluding baseline which is row 1)
+best_row <- which.min(q1e_comparison$Test_MSE[-1]) + 1
+
+kable(q1e_comparison, caption = "Complete Model Comparison: Baseline, Selection Methods, and Regularisation") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed")) %>%
+  row_spec(0, bold = TRUE) %>%
+  row_spec(best_row, background = "#90EE90", bold = TRUE)
+
+```
+
+
+The results highlight how each modelling approach responded to the severe multicollinearity identified in Question 1(A).
+
+**LASSO regression** achieved the best predictive performance, producing the lowest test-set MSE (`r fmt(q1d_mse_lasso)`) while retaining `r q1d_lasso_n` predictors. This represents approximately a `r round(100 * (q1b_mse - q1d_mse_lasso) / q1b_mse, 1)`% reduction in MSE compared to the baseline full linear model from Question 1(B). LASSO's success can be attributed to its ability to perform both shrinkage and variable selection, effectively identifying the most relevant predictors while setting redundant coefficients to zero. Given the severe multicollinearity observed in Question 1(A) (with many variable pairs exhibiting correlations above 0.9), LASSO's tendency to select only one variable from groups of highly correlated predictors proved beneficial, as it eliminated noise and reduced overfitting.
+
+**Ridge regression** retained all `r q1d_ridge_n` predictors but achieved a higher test MSE (`r fmt(q1d_mse_ridge)`) than LASSO. While Ridge successfully stabilises coefficient estimates through shrinkage and handles multicollinearity well by shrinking correlated predictors towards each other, it does not perform variable selection. Consequently, although Ridge improved upon the baseline model (MSE reduction of approximately `r round(100 * (q1b_mse - q1d_mse_ridge) / q1b_mse, 1)`%), it retained many predictors that likely contributed little to predictive performance, increasing variance without a corresponding reduction in bias.
+
+**Stepwise selection** from Question 1(C) achieved a test MSE of `r fmt(q1c_mse_stepwise)` with `r q1c_stepwise_n` predictors. While this represents a substantial improvement over the baseline model, stepwise selection underperformed compared to LASSO. This can be explained by the greedy nature of stepwise algorithms, which make locally optimal decisions at each step and cannot evaluate all possible predictor subsets. In contrast, LASSO directly optimises a convex penalised likelihood function, providing a more globally optimal solution.
+
+From a **bias-variance trade-off** perspective, LASSO achieved the most favourable balance. By shrinking some coefficients exactly to zero, LASSO substantially reduced model variance through simplification while introducing only moderate bias. Ridge reduced variance via shrinkage but kept all predictors, resulting in higher variance than LASSO. Stepwise selection, while producing a sparse model, may have introduced additional instability due to its discrete selection process, where small changes in the data can lead to different variables being selected.
+
+The **correlation structure** from Question 1(A) explains why LASSO outperformed Ridge. The dataset contains groups of highly correlated economic variables measured across multiple time lags. Ridge tends to average these correlated predictors, which can dilute predictive signal if only a subset of the group is truly relevant. LASSO, however, can select the most informative predictor from each correlated group while discarding the rest, leading to a sparser and more interpretable model with potentially better generalisation.
+
+It is also important to note that the number of training observations exceeds the number of predictors (n > p), meaning that all models considered are estimable without requiring dimensionality reduction purely for identifiability. Instead, the principal challenge in this dataset arises from strong multicollinearity rather than high dimensionality.
+
+In summary, **LASSO regression** emerged as the preferred method for this dataset because it effectively balances bias and variance by leveraging the correlation structure to select a parsimonious set of predictors. Its ability to handle multicollinearity through both shrinkage and variable selection, combined with its convex optimisation framework, makes it more theoretically grounded and practically effective than either Ridge regression or stepwise selection for this particular prediction task. An Elastic Net approach could potentially offer further improvements by combining Ridge's grouping effect with LASSO's sparsity, particularly if the predictive signal is distributed across groups of correlated variables rather than concentrated in isolated predictors.
+
+
+## Question Two
+
+**(20 marks) Also included in the assignment folder is the file parkinsons.csv, this dataset contains information on 42 patients with Parkinson's disease. The outcome of interest is UPDRS, which is the total Unified Parkinson's disease rating scale. The first 96 features, X1–X96, have been derived from audio recordings of speech tests (i.e. there has already been a process of feature extraction) while feature X97 is already known to be informative for UPDRS.**
+
+**Read in the dataset and set up the model matrix X. Next, randomly split the data into a training set with 30 patients and a test set with 12 patients – remembering to state what your RNG seed was.**
+
+
+```{r qu2_set_seed, include = TRUE, warning = FALSE, message = FALSE}
+
+# Set seed
+set.seed(123)
+
+```
+
+
+```{r qu2_load_dataset, include = TRUE, warning = FALSE, message = FALSE}
+
+# Load in Question Two dataset
+q2_data <- read.csv("parkinsons.csv")
+
+# Create a model matrix with x (all predictors) and y (UPDRS)
+q2_X <- as.matrix(q2_data[, -which(names(q2_data) %in% c("UPDRS", "X"))])
+q2_y <- q2_data$UPDRS
+
+```
+
+The dataset contains `r nrow(q2_data)` patients and 98 columns, giving 97 predictors and a single outcome variable of UPDRS.
+
+**Standardize your training and test sets before your analysis: X = scale(X) so that the absolute size of the estimated coefficients will give a measure of the relative importance of the features in the fitted model.**
+
+**Footnote: This dataset has been derived from the Oxford Parkinson's Disease Telemonitoring Dataset available at: <http://archive.ics.uci.edu/ml/datasets/Parkinsons+Telemonitoring>**
+
+
+```{r qu_2_train_and_test_split_01, include = TRUE, warning = FALSE, message = FALSE}
+
+# Split into training (30 patients) and test (12 patients)
+q2_train_idx <- sample(1:nrow(q2_data), size = 30, replace = FALSE)
+
+# Define raw non-standardised data
+q2_X_train_raw <- q2_X[q2_train_idx, ]
+q2_X_test_raw <- q2_X[-q2_train_idx, ]
+q2_y_train <- q2_y[q2_train_idx]
+q2_y_test <- q2_y[-q2_train_idx]
+
+```
+
+
+```{r qu_2_train_and_test_split_02, include = TRUE, warning = FALSE, message = FALSE}
+
+# Collect training statistics
+q2_train_means <- colMeans(q2_X_train_raw)
+q2_train_sds <- apply(q2_X_train_raw, 2, sd)
+
+# Standardise training set
+q2_X_train <- scale(q2_X_train_raw, center = q2_train_means, scale = q2_train_sds)
+
+# Standardise test set using training set statistics
+q2_X_test  <- scale(q2_X_test_raw, center = q2_train_means, scale = q2_train_sds)
+
+round(colMeans(q2_X_train), 10)
+round(apply(q2_X_train, 2, sd), 10)
+
+```
+
+The training set was standardised using its own column means and standard deviations. These same means and standard deviations were then applied to the test set to avoid any leakage of test set information into the scaling. The above outputs confirm that all training column means are 0 and all standard deviations are 1.
+
+
+### Question Two (A)
+
+**(a) (5 marks) Confirm that a linear model can fit the training data exactly. Why is this model not going to be useful for prediction?**
+
+
+```{r qu_2a_01, include = TRUE, warning = FALSE, message = FALSE}
+
+# Convert standardised matrix to a dataframe for lm()
+q2a_train_df <- as.data.frame(q2_X_train)
+
+# Fit linear model with all predictors
+q2a_model <- lm(q2_y_train ~ ., data = q2a_train_df)
+
+# Use the below r code
+q2a_p <- ncol(q2_X_train)
+q2a_n <- length(q2_y_train)
+q2a_rsq <- summary(q2a_model)$r.squared
+q2a_max_res <- max(abs(residuals(q2a_model)))
+
+```
+
+The linear model was fitted with all `r q2a_p` predictors on `r q2a_n` training observations, achieving an R-squared of `r q2a_rsq` and a maximum absolute residual of `r q2a_max_res`. This confirms a perfect fit to the training data. This happens because the number of predictors (p) is more than the number of observations (n) (`r q2a_p` > `r q2a_n`). This makes the system underdetermined. There are infinitely many coefficient vectors that pass exactly through every training point, so OLS interpolates all of them. In practical terms, this model would be not recommended for prediction using unseen data because it has memorised the training data, including all of its noise, rather than learning the true underlying signal. The coefficient estimates are unstable and non‑unique, and as shown in Q2(B), the model generalises catastrophically when presented with new patients.
+
+
+### Question Two (B)
+
+**(b) (8 marks) Now use the LASSO to fit the training data, using leave-one-out cross-validation to find the tuning parameter λ. (This means nfolds = 30. You will also find it convenient to set grid = 10^seq(3, -1, 100) and thresh = 1e-10). Report the optimal value of λ and what is the resulting test-set MSE and computational time. Compare to the lm() baseline.**
+
+
+```{r qu_2b_01, include = TRUE, warning = FALSE, message = FALSE}
+
+# Set up grid and threshold 
+q2b_lambda_grid <- 10^seq(3, -1, length.out = 100)
+q2b_thresh <- 1e-10
+
+```
+
+
+```{r qu_2b_02, include = TRUE, warning = FALSE, message = FALSE}
+
+# Time LASSO cross-validation
+q2b_time <- system.time({
+  q2b_cv <- cv.glmnet(
+    x = q2_X_train,
+    y = q2_y_train,
+    alpha = 1,
+    nfolds = nrow(q2_X_train),
+    lambda = q2b_lambda_grid,
+    thresh = q2b_thresh
+  )
+})
+
+```
+
+
+```{r qu_2b_03, include = TRUE, warning = FALSE, message = FALSE}
+
+# Extract optimal lambda values
+q2b_lambda_min <- q2b_cv$lambda.min
+q2b_lambda_1se <- q2b_cv$lambda.1se
+
+```
+
+
+```{r qu_2b_04, include = TRUE, warning = FALSE, message = FALSE}
+
+# Predictions at each lambda (s = specifies which lambda to predict at)
+q2b_pred_min <- as.vector(predict(q2b_cv, newx = q2_X_test, s = q2b_lambda_min))
+q2b_pred_1se <- as.vector(predict(q2b_cv, newx = q2_X_test, s = q2b_lambda_1se))
+
+# Test MSE
+q2b_mse_min <- mean((q2_y_test - q2b_pred_min)^2)
+q2b_mse_1se <- mean((q2_y_test - q2b_pred_1se)^2)
+
+# Number of non-zero coefficients selected (excluding intercept)
+q2b_coef_min    <- coef(q2b_cv, s = q2b_lambda_min)
+q2b_coef_1se    <- coef(q2b_cv, s = q2b_lambda_1se)
+q2b_n_sel_min   <- sum(q2b_coef_min[-1] != 0)
+q2b_n_sel_1se   <- sum(q2b_coef_1se[-1] != 0)
+
+```
+
+
+```{r qu_2b_05, include = TRUE, warning = FALSE, message = FALSE}
+
+# OLS baseline test MSE
+q2b_test_df        <- as.data.frame(q2_X_test)
+names(q2b_test_df) <- names(q2a_train_df)
+q2b_pred_lm        <- predict(q2a_model, newdata = q2b_test_df)
+q2b_mse_lm         <- mean((q2_y_test - q2b_pred_lm)^2)
+
+```
+
+
+```{r qu_2b_06, include = TRUE, warning = FALSE, message = FALSE}
+
+# Summary table with computation time included
+q2b_results <- data.frame(
+  Method = c("LASSO (lambda_min)", "LASSO (lambda_1se)", "Baseline lm()"),
+  Lambda = c(round(q2b_lambda_min, 4), round(q2b_lambda_1se, 4), NA),
+  Test_MSE = c(round(q2b_mse_min, 2), round(q2b_mse_1se, 2), round(q2b_mse_lm, 2)),
+  Predictors_Selected = c(q2b_n_sel_min, q2b_n_sel_1se, ncol(q2_X_train)),
+  Time_Seconds = c(round(q2b_time[3], 2), round(q2b_time[3], 2), NA)
+)
+
+kable(q2b_results, caption = "LASSO vs Baseline Comparison") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover")) %>%
+  row_spec(0, bold = TRUE)
+
+```
+
+The LASSO methodology was fitted using leave-one-out cross-validation with `r nrow(q2_X_train)` folds. The tuning grid consisted of `r length(q2b_lambda_grid)` values of λ, ranging from 10³ to 10⁻¹, with a convergence threshold of `r q2b_thresh`. The total computation time was `r round(q2b_time[3], 2)` seconds.
+
+Cross-validation selected an optimal `lambda_min` of `r round(q2b_lambda_min, 4)`. This model achieved a test MSE of `r round(q2b_mse_min, 2)` and selected `r q2b_n_sel_min` predictors. Using the one-standard-error rule, `lambda_1se` of `r round(q2b_lambda_1se, 4)` selected `r q2b_n_sel_1se` predictors, with a slightly higher test MSE of `r round(q2b_mse_1se, 2)`.
+
+In comparison, the OLS baseline produced a test MSE of `r round(q2b_mse_lm, 2)`, despite achieving a perfect fit on the training data. This clearly shows the extent of overfitting in the p > n setting, where the model effectively memorises the training data but fails to generalise.
+
+Both LASSO models dramatically reduce this error. In particular, the λ_min model improves performance by approximately `r round(q2b_mse_lm / q2b_mse_min, 0)`-fold relative to OLS. This comes from shrinking irrelevant coefficients to zero, reducing variance, and accepting a small amount of bias in exchange for much better predictive performance.
+
+
+### Question Two (C)
+
+**(c) (7 marks) State your final model for the UPDRS. How many features have been selected? Interpret the non-zero coefficients in the Parkinson's disease context. What conclusions can you draw about speech features?**
+
+
+```{r qu_2c_01, include = TRUE, warning = FALSE, message = FALSE}
+
+# Extract coefficients as matrices
+q2c_coef_min <- as.matrix(q2b_coef_min)
+q2c_coef_1se <- as.matrix(q2b_coef_1se)
+
+```
+
+
+```{r qu_2c_02, include = TRUE, warning = FALSE, message = FALSE}
+
+# lambda_min: selected features
+q2c_sel_idx_min <- which(q2c_coef_min[-1, 1] != 0)
+q2c_sel_feat_min <- rownames(q2c_coef_min)[q2c_sel_idx_min + 1]
+q2c_sel_coef_min <- q2c_coef_min[q2c_sel_idx_min + 1, 1]
+q2c_intercept_min <- q2c_coef_min[1, 1]
+
+```
+
+
+```{r qu_2c_03, include = TRUE, warning = FALSE, message = FALSE}
+
+# lambda_1se: selected features
+q2c_sel_idx_1se   <- which(q2c_coef_1se[-1, 1] != 0)
+q2c_sel_feat_1se  <- rownames(q2c_coef_1se)[q2c_sel_idx_1se + 1]
+q2c_sel_coef_1se  <- q2c_coef_1se[q2c_sel_idx_1se + 1, 1]
+q2c_intercept_1se <- q2c_coef_1se[1, 1]
+
+```
+
+
+```{r qu_2c_04, include = TRUE, warning = FALSE, message = FALSE}
+
+# Combined coefficient table for both lambda models
+q2c_coef_table <- data.frame(
+  Predictor = c("(Intercept)", q2c_sel_feat_min),
+  Coefficient_lambda_min = round(c(q2c_intercept_min, q2c_sel_coef_min), 4),
+  In_lambda_1se = c(
+    "Yes",
+    ifelse(q2c_sel_feat_min %in% q2c_sel_feat_1se, "Yes", "No")
+  )
+)
+
+# Remove duplicate row names
+rownames(q2c_coef_table) <- NULL
+
+kable(q2c_coef_table, 
+      caption = "Non-zero Coefficients: LASSO Final Models",
+      col.names = c("Predictor", "Coefficient (λ_min)", 
+                    "Selected in λ_1se model?")) %>%
+  kable_styling(full_width = FALSE, 
+                bootstrap_options = c("striped", "hover")) %>%
+  row_spec(0, bold = TRUE)
+
+```
+
+
+```{r qu_2c_05, include = TRUE, warning = FALSE, message = FALSE}
+
+# Build equation string for lambda_min
+q2c_eq_min <- paste0(
+  round(q2c_intercept_min, 4),
+  paste0(
+    " + ",
+    round(q2c_sel_coef_min, 4),
+    " * ",
+    q2c_sel_feat_min,
+    collapse = ""
+  )
+)
+
+# Build equation string for lambda_1se
+if (length(q2c_sel_coef_1se) == 1) {
+  q2c_eq_1se <- paste0(
+    round(q2c_intercept_1se, 4),
+    " + ",
+    round(q2c_sel_coef_1se, 4),
+    " * ",
+    q2c_sel_feat_1se
+  )
+} else {
+  q2c_eq_1se <- paste0(
+    round(q2c_intercept_1se, 4),
+    paste0(
+      " + ",
+      round(q2c_sel_coef_1se, 4),
+      " * ",
+      q2c_sel_feat_1se,
+      collapse = ""
+    )
+  )
+}
+
+```
+
+The λ_min and λ_1se LASSO models select `r length(q2c_sel_idx_min)` and `r length(q2c_sel_idx_1se)` predictors respectively, illustrating the trade-off between model complexity and parsimony.
+
+**i) Using λ_min:**
+
+$$
+\widehat{\text{UPDRS}} = `r q2c_eq_min` \quad (\lambda_{\min})
+$$
+
+The fitted model includes the predictors `r paste(q2c_sel_feat_min, collapse = ", ")`, with intercept `r round(q2c_intercept_min, 4)` and corresponding coefficients.
+
+**ii) Using λ_1se:**
+
+The fitted model is more parsimonious, selecting only the predictor `r q2c_sel_feat_1se`, with intercept `r round(q2c_intercept_1se, 4)`.
+
+$$
+\widehat{\text{UPDRS}} = `r q2c_eq_1se` \quad (\lambda_{\text{1se}})
+$$
+
+Because all predictors were standardised prior to fitting, the estimated coefficients are directly comparable and provide a measure of relative importance. Under the λ_min model, a one standard deviation increase in each selected feature leads to a change in UPDRS equal to its corresponding coefficient. In particular, `r q2c_sel_feat_min[which.max(abs(q2c_sel_coef_min))]` has the largest effect, indicating it is the most influential predictor of disease severity among those selected. All selected coefficients are positive, indicating that increases in these speech-derived features are associated with higher UPDRS scores and therefore greater Parkinson's severity.
+
+The λ_min model selects `r length(q2c_sel_idx_min)` predictors, indicating that multiple aspects of speech contain useful information for predicting disease severity. In contrast, the λ_1se model selects only `r q2c_sel_feat_1se`, implying that much of the predictive signal can be captured by a single dominant feature. Note that the coefficient for X97 differs between models as stronger regularisation under λ_1se applies greater shrinkage. The exclusion of the remaining predictors suggests that much of the information contained in the full set of speech features is either redundant or weak once the selected variables are included. This is consistent with the presence of correlation among speech-derived features.
+
+This leads to a clear trade-off between model complexity and predictive performance. The λ_min model achieves a lower test MSE (`r round(q2b_mse_min, 2)` vs `r round(q2b_mse_1se, 2)`), indicating better predictive accuracy, but at the cost of requiring measurement of multiple features. The λ_1se model is more parsimonious, requiring only a single predictor, which makes it easier and faster to implement in practice, particularly in clinical settings where time and resources may be limited.
+
+Overall, the λ_min model would be preferred if predictive accuracy is the primary objective, as it achieves substantially lower test error. However, in settings where simplicity, interpretability, and data collection efficiency are prioritised, the λ_1se model provides a compelling alternative.
+
+
+## Question Three
+
+**(40 marks) Another dataset included in the assignment folder is the file Weather_Station_Data_v1.csv, this dataset contains 2000 observations of weather station data, where the MEAN_ANNUAL_RAINFALL is given against thirteen attributes (features) of the weather stations. There are no missing or undefined values in the dataset. The first row of the CSV contains the variable names.**
+
+
+```{r qu3_set_seed, include = TRUE, warning = FALSE, message = FALSE}
+
+# Set seed
+set.seed(123)
+
+```
+
+
+```{r qu3_load_dataset, include = TRUE, warning = FALSE, message = FALSE}
+
+# Load the dataset
+q3_data <- read.csv("Weather_Station_Data_v1.csv", header = TRUE)
+
+```
+
+
+### Question Three (A)
+
+**(a) Randomly split the data using a 80:20 split (train/test).**
+
+
+```{r qu_3a_01, include = TRUE, warning = FALSE, message = FALSE}
+
+# Create a model matrix with all predictors and y (MEAN_ANNUAL_RAINFALL)
+q3_X <- as.matrix(q3_data[, !names(q3_data) %in% "MEAN_ANNUAL_RAINFALL"])
+q3_y <- q3_data$MEAN_ANNUAL_RAINFALL
+
+# Create train/test split (80/20)
+n <- nrow(q3_data)
+q3_train_idx <- sample(1:n, size = 0.8 * n, replace = FALSE)
+
+# Define raw train/test split
+q3_X_train <- q3_X[q3_train_idx, ]
+q3_X_test  <- q3_X[-q3_train_idx, ]
+q3_y_train <- q3_y[q3_train_idx]
+q3_y_test  <- q3_y[-q3_train_idx]
+
+```
+
+
+```{r qu_3a_02, include = TRUE, warning = FALSE, message = FALSE}
+
+# Make train/test split summary table
+q3_split_summary <- data.frame(
+  Dataset = c("Training (80%)", "Test (20%)", "Total"),
+  Observations = c(nrow(q3_X_train), nrow(q3_X_test), n)
+)
+
+kable(q3_split_summary, caption = "Train/Test Split Summary") %>%
+  kable_styling(full_width = FALSE)
+
+```
+
+
+```{r qu_3a_03, include = TRUE, warning = FALSE, message = FALSE}
+
+# Make an overview
+q3_var_summary <- data.frame(
+  Response_Variable = "MEAN_ANNUAL_RAINFALL",
+  Predictors = ncol(q3_X),
+  Split_Seed = 123
+)
+
+kable(q3_var_summary, caption = "Dataset Overview") %>%
+  kable_styling(full_width = FALSE)
+
+```
+
+The dataset was randomly split into training (80%) and test (20%) sets using a random seed of 123 for reproducibility. The training set contains `r nrow(q3_X_train)` observations and the test set contains `r nrow(q3_X_test)` observations. The response variable is MEAN_ANNUAL_RAINFALL with `r ncol(q3_X)` predictor variables. These predictor variables include: `r paste(colnames(q3_X), collapse = ", ")`.
+
+
+### Question Three (B)
+
+**(b) Train an ElasticNet model to predict MEAN_ANNUAL_RAINFALL using 10-fold cross-validation to optimize values for α and λ.**
+
+
+```{r qu_3b_01, include = TRUE, warning = FALSE, message = FALSE}
+
+# Standardise using training set only (avoid data leakage)
+q3_X_train_scaled <- scale(q3_X_train)
+
+q3_X_test_scaled <- scale(
+  q3_X_test,
+  center = attr(q3_X_train_scaled, "scaled:center"),
+  scale  = attr(q3_X_train_scaled, "scaled:scale")
+)
+
+```
+
+
+```{r qu_3b_02, include = TRUE, warning = FALSE, message = FALSE}
+
+# Establish alpha grid and lambda grids
+q3_alpha_grid <- seq(0, 1, length.out = 10)
+q3_lambda_grid <- 10^seq(3, -3, length.out = 100)
+
+# ElasticNet cross validation for alpha and lambda tuning
+q3_cv_list <- list()
+q3_cv_error <- numeric(length(q3_alpha_grid))
+
+q3_time_elnet <- system.time({
+  for (i in seq_along(q3_alpha_grid)) {
+    q3_cv_list[[i]] <- cv.glmnet(
+      x = q3_X_train_scaled,
+      y = q3_y_train,
+      alpha = q3_alpha_grid[i],
+      nfolds = 10,
+      lambda = q3_lambda_grid
+    )
+    q3_cv_error[i] <- min(q3_cv_list[[i]]$cvm)
+  }
+  q3_best_idx <- which.min(q3_cv_error)
+  q3_best_alpha <- q3_alpha_grid[q3_best_idx]
+  q3_best_cv <- q3_cv_list[[q3_best_idx]]
+})
+
+```
+
+
+```{r qu_3b_03, include = TRUE, warning = FALSE, message = FALSE}
+
+# Find optimal lambda parameters
+q3_lambda_min <- q3_best_cv$lambda.min
+q3_lambda_1se <- q3_best_cv$lambda.1se
+
+# Predictions
+q3_pred_min <- predict(q3_best_cv, newx = q3_X_test_scaled, s = q3_lambda_min)
+q3_pred_1se <- predict(q3_best_cv, newx = q3_X_test_scaled, s = q3_lambda_1se)
+
+# Test MSE
+q3_mse_min <- mean((q3_y_test - q3_pred_min)^2)
+q3_mse_1se <- mean((q3_y_test - q3_pred_1se)^2)
+
+# Model sparsity (non-zero coefficients)
+q3_coef_min <- coef(q3_best_cv, s = q3_lambda_min)
+q3_coef_1se <- coef(q3_best_cv, s = q3_lambda_1se)
+
+q3_n_min <- sum(q3_coef_min[-1] != 0)
+q3_n_1se <- sum(q3_coef_1se[-1] != 0)
+
+```
+
+
+```{r qu_3b_04, include = TRUE, warning = FALSE, message = FALSE}
+
+# Make a dataframe of results
+q3b_results <- data.frame(
+  Model = c("ElasticNet (lambda_min)", "ElasticNet (lambda_1se)"),
+  Alpha = round(q3_best_alpha, 3),
+  Lambda = c(round(q3_lambda_min, 4), round(q3_lambda_1se, 4)),
+  Test_MSE = c(round(q3_mse_min, 2), round(q3_mse_1se, 2)),
+  Predictors_Selected = c(q3_n_min, q3_n_1se),
+  Time_sec = round(q3_time_elnet[3], 3)
+)
+
+kable(q3b_results, caption = "ElasticNet Model Comparison") %>%
+  kable_styling(full_width = FALSE)
+
+```
+
+An ElasticNet model was fitted using 10-fold cross-validation to jointly tune the mixing parameter α and the regularisation parameter λ. A grid of 10 α values ranging from 0 (Ridge) to 1 (LASSO) was evaluated alongside 100 λ values on a logarithmic scale from 10³ to 10⁻³. The optimal value of α was `r round(q3_best_alpha, 3)`, with λ_min = `r round(q3_lambda_min, 4)` and λ_1se = `r round(q3_lambda_1se, 4)`. The full cross-validation procedure completed in `r round(q3_time_elnet[3], 2)` seconds.
+
+
+### Question Three (C)
+
+**(c) Plot the cross-validation results for your model.**
+
+
+```{r qu_3c_01, include = TRUE, warning = FALSE, message = FALSE}
+
+# Extract cross validation results for plotting
+q3_cv_df <- data.frame(
+  lambda = q3_best_cv$lambda,
+  log_lambda = log(q3_best_cv$lambda),
+  cvm = q3_best_cv$cvm,
+  cvup = q3_best_cv$cvup,
+  cvlo = q3_best_cv$cvlo
+)
+
+# Find indices for min and 1se
+q3_min_idx <- which(q3_best_cv$lambda == q3_lambda_min)
+q3_1se_idx <- which(q3_best_cv$lambda == q3_lambda_1se)
+
+```
+
+
+```{r qu_3c_02, include = TRUE, warning = FALSE, message = FALSE, fig.width = 8, fig.height = 6, fig.align = "center"}
+
+# Plot minimum cross validation error for each alpha value
+q3_alpha_error_df <- data.frame(
+  alpha = q3_alpha_grid,
+  min_cv_error = q3_cv_error
+)
+
+ggplot(q3_alpha_error_df, aes(x = alpha, y = min_cv_error)) +
+  geom_line(color = "darkgreen", linewidth = 1) +
+  geom_point(size = 3, color = "darkgreen") +
+  geom_point(aes(x = q3_best_alpha, y = min(q3_cv_error)), 
+             color = "red", size = 4, shape = 18) +
+  labs(
+    title = "Minimum Cross-Validation Error by Alpha Value",
+    x = expression(alpha ~ "(Mixing Parameter)"),
+    y = "Minimum CV MSE"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5)
+  )
+
+```
+
+
+```{r qu_3c_03, include = TRUE, warning = FALSE, message = FALSE, fig.width = 8, fig.height = 6, fig.align = "center"}
+
+# Plot the cross validation graph using the optimal alpha
+ggplot(q3_cv_df, aes(x = log_lambda, y = cvm)) +
+  geom_line(color = "#ADD8E6", linewidth = 1) +
+  geom_point(size = 2, color = "#ADD8E6") +
+  geom_errorbar(aes(ymin = cvlo, ymax = cvup), alpha = 0.3, width = 0.1) +
+  geom_vline(xintercept = log(q3_lambda_min), linetype = "dashed", color = "blue", linewidth = 1) +
+  geom_vline(xintercept = log(q3_lambda_1se), linetype = "dashed", color = "red", linewidth = 1) +
+  annotate("text", x = log(q3_lambda_min), y = max(q3_cv_df$cvm), 
+           label = "lambda.min", angle = 90, vjust = -0.5, hjust = 1, color = "blue") +
+  annotate("text", x = log(q3_lambda_1se), y = max(q3_cv_df$cvm), 
+           label = "lambda.1se", angle = 90, vjust = -0.5, hjust = 1, color = "red") +
+  labs(
+    title = paste("ElasticNet Cross-Validation Error (α =", round(q3_best_alpha, 3), ")"),
+    x = expression(log(lambda)),
+    y = "Cross-validated MSE"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    panel.grid.minor = element_blank()
+  )
+
+```
+
+The cross-validation results show that the optimal α value is `r round(q3_best_alpha, 3)`, balancing between Ridge (α = 0) and LASSO (α = 1) regularisation. The CV error curve for the optimal α demonstrates the typical U-shaped pattern, with λ_min = `r round(q3_lambda_min, 4)` providing the lowest CV error and selecting `r q3_n_min` predictors, while λ_1se = `r round(q3_lambda_1se, 4)` provides a more parsimonious model with `r q3_n_1se` predictors within one standard error of the minimum. This behaviour reflects the bias–variance trade-off, where increasing λ reduces model variance at the cost of increased bias, resulting in a simpler but more stable model.
+
+
+### Question Three (D)
+
+**(d) Make predictions on your test set using both lambda.min and lambda.1se, show the coefficients of each model (the non-zero ones), report the MSE/RMSE of both, and the number of predictors used in each model and computational time. Compare to a lm() baseline.**
+
+
+```{r qu_3d_01, include = TRUE, warning = FALSE, message = FALSE}
+
+# Baseline LM model for comparison
+q3_lm <- lm(q3_y_train ~ ., data = as.data.frame(q3_X_train_scaled))
+q3_pred_lm <- predict(q3_lm, newdata = as.data.frame(q3_X_test_scaled))
+q3_mse_lm <- mean((q3_y_test - q3_pred_lm)^2)
+q3_rmse_lm <- sqrt(q3_mse_lm)
+
+# Create comparison table
+q3d_comparison <- data.frame(
+  Model = c("LM Baseline", "ElasticNet (lambda_min)", "ElasticNet (lambda_1se)"),
+  MSE = c(round(q3_mse_lm, 2), round(q3_mse_min, 2), round(q3_mse_1se, 2)),
+  RMSE = c(round(q3_rmse_lm, 2), round(sqrt(q3_mse_min), 2), round(sqrt(q3_mse_1se), 2)),
+  Predictors_Used = c(ncol(q3_X_train), q3_n_min, q3_n_1se),
+  Time_sec = c(NA, round(q3_time_elnet[3], 3), round(q3_time_elnet[3], 3))
+)
+
+kable(q3d_comparison, caption = "Model Performance Comparison on Test Set") %>%
+  kable_styling(full_width = FALSE)
+
+```
+
+```{r qu_3d_02, include = TRUE, warning = FALSE, message = FALSE}
+
+# Create formatted MSE values for inline use
+q3_mse_lm_fmt  <- fmt(q3_mse_lm)
+q3_mse_min_fmt <- fmt(q3_mse_min)
+q3_mse_1se_fmt <- fmt(q3_mse_1se)
+
+```
+
+
+```{r qu_3d_03, include = TRUE, warning = FALSE, message = FALSE}
+
+# Show non-zero coefficients for lambda.min model
+q3_coef_min_df <- data.frame(
+  Predictor = rownames(q3_coef_min)[which(q3_coef_min != 0)],
+  Coefficient = as.numeric(q3_coef_min[which(q3_coef_min != 0)])
+)
+
+kable(q3_coef_min_df, caption = "Non-zero Coefficients: ElasticNet (lambda_min)") %>%
+  kable_styling(full_width = FALSE)
+
+```
+
+
+```{r qu_3d_04, include = TRUE, warning = FALSE, message = FALSE}
+
+# Show non-zero coefficients for lambda.1se model
+q3_coef_1se_df <- data.frame(
+  Predictor = rownames(q3_coef_1se)[which(q3_coef_1se != 0)],
+  Coefficient = as.numeric(q3_coef_1se[which(q3_coef_1se != 0)])
+)
+
+kable(q3_coef_1se_df, caption = "Non-zero Coefficients: ElasticNet (lambda.1se)") %>%
+  kable_styling(full_width = FALSE)
+
+```
+
+Predictions were made on the test set using both the λ_min and λ_1se ElasticNet models, alongside a baseline ordinary least squares (OLS) lm() model for comparison. The OLS model, which uses all 13 predictors without regularisation, achieved the lowest test MSE of `r q3_mse_lm_fmt` (RMSE = `r round(q3_rmse_lm, 2)`), outperforming both ElasticNet models.
+
+The λ_min ElasticNet model retained all 13 predictors and achieved a slightly higher test MSE of `r q3_mse_min_fmt` (RMSE = `r round(sqrt(q3_mse_min), 2)`), while the λ_1se model selected a reduced set of `r q3_n_1se` predictors with a test MSE of `r q3_mse_1se_fmt` (RMSE = `r round(sqrt(q3_mse_1se), 2)`).
+
+These results are consistent with expectations. With only 13 predictors and 1600 training observations (n >> p), the OLS estimator already has low variance and does not suffer from overfitting. In this setting, regularisation introduces bias without sufficient variance reduction to justify the trade-off, meaning OLS generalises well without penalisation. This contrasts with Question 2, where p > n made regularisation essential.
+
+
+### Question Three (E)
+
+**(e) Which model (min vs 1se) would you choose? Justify using bias-variance considerations and the number of predictors retained.**
+
+The choice between the λ_min and λ_1se ElasticNet models depends on the bias–variance trade-off and the desired balance between predictive accuracy and model simplicity. The λ_min model minimises cross-validation error and therefore has lower bias, but it retains all 13 predictors, making it equivalent in complexity to the OLS model. In contrast, the λ_1se model applies stronger regularisation, increasing bias slightly but reducing variance and selecting a more parsimonious model with only `r q3_n_1se` predictors.
+
+However, the results show that the baseline OLS model achieves the lowest test MSE (`r q3_mse_lm_fmt`), outperforming both ElasticNet models. This suggests that regularisation is not beneficial in this dataset. Unlike the Parkinson's dataset in Question 2, where p > n and overfitting was severe, this dataset has only 13 predictors and a relatively large sample size (2000 observations), reducing the risk of overfitting. As a result, the variance of the OLS estimator is already low, and introducing regularisation unnecessarily increases bias without sufficient variance reduction.
+
+Between the two ElasticNet models, the λ_1se model would be preferred if interpretability and model simplicity are prioritised, as it achieves comparable performance using fewer predictors. However, if predictive accuracy is the primary objective, the OLS model is clearly the best choice in this case.
+
+Overall, this example highlights that regularisation is not universally beneficial as its effectiveness depends on the underlying data structure. In settings with low dimensionality and limited multicollinearity, such as this one, OLS can outperform penalised regression methods, whereas in high-dimensional settings, regularisation becomes essential.
+
+
+## Reproducibility Statement
+
+
+```{r session_info, include = TRUE, warning = FALSE, message = FALSE}
+
+sessionInfo()
+
+```
+
+ChatGPT was used to fix R code when it came towards plotting data into ggplot visualisations.
+
+
+## References
+
+*(Add your references here)*
+
+
+## Fin
